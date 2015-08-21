@@ -1,0 +1,346 @@
+---
+output:
+  html_document:
+    keep_md: yes
+  pdf_document:
+    keep_tex: yes
+---
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(fig.width = 12, 
+                      fig.height = 8, 
+                      fig.path = 'figure/',
+                      echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE)
+```
+#Kaggle
+###Titanic: Machine Learning from Disaster
+
+
+###Introduction
+This repository holds results for the Kaggle competition: Titanic: Machine Learning from Disaster.
+
+
+###Data
+The datasets were obtained from the Kaggle Titanic Challenge: [Kaggle page](https://www.kaggle.com/c/titanic)
+
+* Training Dataset: [training data](https://www.kaggle.com/c/titanic-gettingStarted/download/train.csv)
+* Testing Dataset: [test data](https://www.kaggle.com/c/titanic-gettingStarted/download/test.csv)
+
+
+###1. Loading Packages/ Data
+```{r}
+for (package in c('knitr', 'caret', 'randomForest', 'e1071', 'gbm', 'rpart', 'rpart.plot', 'ggplot2', 'gridExtra')) {
+  
+  if (!require(package, character.only = TRUE, quietly = FALSE)) {
+    install.packages(package)
+    library(package, character.only = TRUE)
+  }
+  
+}
+
+val_dfname <- c("train.csv", "test.csv")
+val_dfpath <- paste(getwd(), "/data", sep = "/")
+
+val_dtrawname <- c("data_training.raw", "data_testing.raw")
+val_dtname <- c("data_training", "data_testing")
+
+val_dtclass <- c("val_trainclass", "val_testclass")
+
+val_trainclass <- c("integer",   ## PassengerId
+                    "factor",    ## Survived 
+                    "factor",    ## Pclass
+                    "character", ## Name
+                    "factor",    ## Sex
+                    "numeric",   ## Age
+                    "integer",   ## SibSp
+                    "integer",   ## Parch
+                    "character", ## Ticket
+                    "numeric",   ## Fare
+                    "character", ## Cabin
+                    "factor")    ## Embarked
+
+val_testclass <- val_trainclass[-2]
+
+for (i in 1:length(val_dtrawname)){
+  
+  assign(val_dtrawname[i], read.csv(paste(val_dfpath, val_dfname[i], sep = "/"), 
+                                    na.strings = c("NA", ""), 
+                                    colClasses = get(val_dtclass[i])))
+  
+  assign(val_dtname[i], get(val_dtrawname[i]))
+  
+}
+```
+
+
+###2. Pre-process the Data
+Check the original data:
+```{r}
+## dim(data_training.raw)
+## str(data_training.raw)
+summary(data_training.raw)
+```
+
+Categorize passengers by 'Title', and create new 'FamilySize' Variable:
+```{r}
+for (i in 1:length(val_dtname)){
+  
+  temp_data <- get(val_dtname[i])
+  temp_data["Title"] <- NA
+  temp_data["FamilySize"] <- NA
+  
+  for (j in 1:nrow(temp_data)){
+    
+    temp_data[j, "Title"] <- strsplit(temp_data[j, "Name"], split='[,.]')[[1]][2]
+    temp_data[j, "FamilySize"] <- temp_data[j, "SibSp"] + temp_data[j, "Parch"] + 1
+    
+  }
+  
+  temp_data[temp_data == ""] <- NA
+  
+  temp_data$Title = as.character(temp_data$Title)
+  temp_data$FamilySize = as.integer(temp_data$FamilySize)
+  ## print(sum(is.na(temp_data$Title)))
+  ## print(sum(is.na(temp_data$FamilySize)))
+  assign(val_dtname[i], temp_data)
+  
+}
+
+rm(temp_data)
+```
+
+Replace NA values within numeric class columns with mean and NA values within other class columns with most common occurrence:
+```{r}
+for (i in 1:length(val_dtname)){
+  
+  temp_data <- get(val_dtname[i])
+  
+  for (j in 1:ncol(temp_data)) {
+    
+    if (class(temp_data[, j]) == "numeric") {
+      
+      temp_colmean <- mean(temp_data[, j], na.rm = TRUE)
+      temp_data[, j][which(is.na(temp_data[, j]))] <- temp_colmean
+      
+    } else {
+      
+      temp_colmode <- tail(names(sort(table(temp_data[, j]))), 1)
+      temp_data[, j][which(is.na(temp_data[, j]))] <- temp_colmode
+
+    }
+    
+  }
+   
+  assign(val_dtname[i], temp_data)
+
+}
+  
+rm(temp_data, temp_colmean, temp_colmode)
+```
+
+Check the processed data:
+```{r}
+## dim(data_training)
+## str(data_training)
+summary(data_training)
+```
+
+Check the processed data:
+```{r}
+tblsumfunc <- function(x){
+
+  temp_data <- data.frame(Survived = data_training$Survived, Title = data_training[[x]], stringsAsFactors = FALSE)
+  temp_obscount <- sort(table(temp_data[, 2]), decreasing = FALSE)
+  
+  if (nrow(temp_obscount) > 10) {
+    
+    if (class(temp_data[, 2]) == "numeric") {
+      
+      temp_data[, 2] <- 10 * ceiling(temp_data[, 2] / 10)
+      ## table(temp_data)
+      
+    } else {
+    
+      temp_lfobsnm <- names(temp_obscount[1:(dim(temp_obscount) - 10)])
+      temp_data[, 2][which(is.element(temp_data[, 2], temp_lfobsnm))] <- "Other"
+      ## table(temp_data)
+      
+    }
+    
+  }
+  
+  temp_table <- table(temp_data)
+  temp_sumtable <- addmargins(temp_table, FUN = list(Total = sum), quiet = TRUE)
+  temp_proptable <- prop.table(temp_sumtable[c(1, 2),], 2)
+  temp_mergedtable <- rbind(temp_sumtable[1, ], 
+                            temp_proptable[1, ], 
+                            temp_sumtable[2, ], 
+                            temp_proptable[2, ], 
+                            temp_sumtable[3, ])
+  rownames(temp_mergedtable) <- c("Didn't Survive", "%", "Survived", "%", "Total")
+  
+  print(x)
+  temp_kabletable <- kable(temp_mergedtable, digits = 2, caption = "test", output = FALSE)
+  cat(temp_kabletable, sep="\n")
+  cat(sep="\n\n")
+  
+  rm(temp_data, temp_table, temp_sumtable, temp_proptable, temp_mergedtable)
+  
+}
+  
+val_sumcolname <- list("Pclass", "Title", "Sex", "Age", "FamilySize")
+
+for(colname in val_sumcolname) { tblsumfunc(colname) }
+```
+At a high level, the data suggests that passengers within the following groups had an improved survival rate:
+* Were Class 1 passengers
+* Had a title of 'Master' / aged 0-10
+* Were female
+* Boarded with a family of size 2-4
+
+Chart the processed data:
+```{r}
+val_agehist <- ggplot(data_training, aes(x = Age, fill = Survived)) +
+                      geom_histogram() +
+                      ggtitle("Age vs Survival") +
+                      theme(legend.position = "bottom") +
+                      scale_fill_discrete(labels = c("No", "Yes"))
+
+val_sexhist <- ggplot(data_training, aes(x = Sex, fill = Survived)) +
+                      geom_histogram() +
+                      ggtitle("Age vs Survival") +
+                      theme(legend.position = "bottom") +
+                      scale_fill_discrete(labels = c("No", "Yes"))
+
+grid.arrange(val_agehist, val_sexhist, ncol = 2)
+
+
+val_pclasshist <- ggplot(data_training, aes(x = Pclass, fill = Survived)) +
+                        geom_histogram() +
+                        ggtitle("Passenger Class vs Survival") +
+                        theme(legend.position = "right") +
+                        scale_fill_discrete(labels = c("No", "Yes"))
+
+val_titlehist <- ggplot(data_training, aes(x = Title, fill = Survived)) +
+                        geom_histogram() +
+                        ggtitle("Title vs Survival") +
+                        theme(legend.position = "right") +
+                        scale_fill_discrete(labels = c("No", "Yes"))
+
+val_familyhist <- ggplot(data_training, aes(x = FamilySize, fill = Survived)) +
+                        geom_histogram() +
+                        ggtitle("Family Size vs Survival") +
+                        theme(legend.position = "right") +
+                        scale_fill_discrete(labels = c("No", "Yes"))
+
+grid.arrange(val_pclasshist, val_titlehist, val_familyhist, nrow = 3)
+```
+
+
+###3. Prediction Modelling
+
+Split the training data:
+```{r}
+set.seed(12345)
+data_training.rows <- createDataPartition(data_training$Survived, p = 0.7, list = FALSE)
+
+data_training.train <- data_training[data_training.rows, ]
+data_training.test <- data_training[-data_training.rows, ]
+```
+
+Check the split data:
+```{r}
+## dim(data_training.train)
+str(data_training.train)
+## summary(data_training.train)
+
+## dim(data_training.test)
+str(data_training.test)
+## summary(data_training.test)
+```
+
+####Decision tree prediction
+```{r}
+set.seed(12345)
+val_dtmodel <- rpart(Survived ~ Pclass + Sex + Age + Fare + Embarked + FamilySize, data = data_training.train, method = "class")
+val_dtmodel.predict <- predict(val_dtmodel, data_training.test, type = "class")
+val_dtcm <- confusionMatrix(val_dtmodel.predict, data_training.test$Survived)
+val_dtcm
+```
+
+Decision tree prediction has a reported accuracy against the training dataset:
+```{r}
+round(val_dtcm$overall['Accuracy'], 4)
+```
+
+```{r}
+plot(val_dtcm$table, 
+    col = val_dtcm$byClass, 
+    main = paste("Decision Tree Confusion Matrix: Accuracy =", 
+    round(val_dtcm$overall['Accuracy'], 4)))
+```
+
+#### Random forest prediction
+```{r}
+set.seed(12345)
+val_rfmodel <- randomForest(Survived ~ Pclass + Sex + Age + Fare + Embarked + FamilySize, data = data_training.train)
+val_rfmodel.predict <- predict(val_rfmodel, data_training.test, type = "class")
+val_rfcm <- confusionMatrix(val_rfmodel.predict, data_training.test$Survived)
+val_rfcm
+```
+
+Random forest prediction has a reported accuracy against the training dataset:
+```{r}
+round(val_rfcm$overall['Accuracy'], 4)
+```
+
+```{r}
+plot(val_rfcm$table, 
+    col = val_rfcm$byClass, 
+    main = paste("Random Forest Confusion Matrix: Accuracy =",
+    round(val_rfcm$overall['Accuracy'], 4)))
+```
+
+#### Generalized boosted regression prediction
+```{r}
+set.seed(12345)
+val_fitControl <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+val_gbmmodel <- train(Survived ~ Pclass + Sex + Age + Fare + Embarked + FamilySize, data = data_training.train, method = "gbm", trControl = val_fitControl, verbose = FALSE)
+val_gbmmodel.predict <- predict(val_gbmmodel, newdata = data_training.test)
+val_gbmcm <- confusionMatrix(val_gbmmodel.predict, data_training.test$Survived)
+val_gbmcm
+```
+
+Generalized boosted regression prediction has a reported accuracy against the training dataset:
+```{r}
+round(val_gbmcm$overall['Accuracy'], 4)
+```
+
+```{r}
+plot(val_gbmcm$table, 
+     col = val_gbmcm$byClass,
+     main = paste("Generalized Boosted Regression Confusion Matrix: Accuracy =",
+     round(val_gbmcm$overall['Accuracy'], 4)))
+```
+
+
+###4. Model Selection
+The expected out-of-sample error is calculated as 1 - accuracy for predictions made against the cross-validation set:
+```{r}
+val_ooserror <- 1 - round(val_rfcm$overall['Accuracy'], 4)
+## val_ooserror <- 1 - round(val_gbmcm$overall['Accuracy'], 4)
+val_ooserror
+```
+
+```{r}
+val_selmodel.final <- predict(val_rfmodel, data_testing)
+## val_selmodel.final <- predict(val_gbmmodel, data_testing)
+```
+
+
+###5. Kaggle Submission
+```{r}
+data_prediction <- data.frame(PassengerId = data_testing$PassengerId, Survived = val_selmodel.final)
+write.table(data_prediction,"data/prediction.csv", row.names = FALSE, sep=",", col.names = TRUE)
+```
